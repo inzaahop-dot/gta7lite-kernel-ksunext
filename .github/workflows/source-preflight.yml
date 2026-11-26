@@ -1,1 +1,51 @@
+name: Kernel source preflight
 
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Checkout gta7lite kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: gta7lite/android_kernel_samsung_ot8
+          ref: master
+          path: kernel-source
+          fetch-depth: 1
+
+      - name: Inspect LTE kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd kernel-source
+          test -f arch/arm64/configs/gta7lite_defconfig
+
+          echo "=== Kernel version ==="
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' Makefile
+
+          echo "=== Source commit ==="
+          git rev-parse HEAD
+
+          echo "=== LTE defconfig ==="
+          grep -E '^(CONFIG_(ARM64|64BIT|KPROBES|KRETPROBES|UPROBES|BUILD_ARM64_APPENDED_DTB_IMAGE|BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES|LOCALVERSION))' arch/arm64/configs/gta7lite_defconfig || true
+
+          echo "=== Existing KernelSU config ==="
+          grep -n 'CONFIG_KSU' arch/arm64/configs/gta7lite_defconfig || true
+
+          mkdir -p ../preflight-output
+          cp arch/arm64/configs/gta7lite_defconfig ../preflight-output/
+          git rev-parse HEAD > ../preflight-output/source-commit.txt
+
+      - name: Upload inspection results
+        uses: actions/upload-artifact@v4
+        with:
+          name: gta7lite-source-preflight
+          path: preflight-output/
