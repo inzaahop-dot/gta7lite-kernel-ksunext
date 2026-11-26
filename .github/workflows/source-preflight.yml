@@ -1,6 +1,6 @@
 name: Kernel source preflight
 
-on:
+'on':
   workflow_dispatch:
 
 permissions:
