@@ -97,19 +97,20 @@ jobs:
           # validation of the four real manual hook call sites installed below.
           kbuild = Path("work/KernelSU-Next/kernel/Kbuild")
           kbuild_text = kbuild.read_text()
-          import re
-          gate_pattern = r"ifeq \\(\\$\\(CONFIG_KSU_MANUAL_HOOK\\), y\\)\\nHAVE_KSU_HOOK := .*?\\nifeq \\(\\$\\(HAVE_KSU_HOOK\\),0\\)\\n.*?\\nendif\\nendif"
+          gate_start = kbuild_text.find("ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)")
+          gate_end_marker = "endif\\nendif"
+          gate_end = kbuild_text.find(gate_end_marker, gate_start)
+          if gate_start < 0 or gate_end < 0:
+              raise SystemExit("Pinned KernelSU Kbuild hook gate changed; refusing blind patch")
+          gate_end += len(gate_end_marker)
           new_gate = """ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)
           HAVE_KSU_HOOK := $(shell grep -q "ksu_handle_execveat" $(srctree)/fs/exec.c && grep -q "ksu_handle_faccessat" $(srctree)/fs/open.c && grep -q "ksu_handle_sys_read" $(srctree)/fs/read_write.c && grep -q "ksu_handle_stat" $(srctree)/fs/stat.c && echo 0 || echo 1)
           ifeq ($(HAVE_KSU_HOOK),0)
           $(info -- KernelSU-Next: Hook mode: Manual (execveat, faccessat, read, stat))
           endif
           endif"""
-          match = re.search(gate_pattern, kbuild_text, re.S)
-          if not match:
-              raise SystemExit("Pinned KernelSU Kbuild hook gate changed; refusing blind patch")
-          kbuild.write_text(kbuild_text[:match.start()] + new_gate + kbuild_text[match.end():])
-          kbuild.write_text(kbuild_text.replace(old_gate, new_gate, 1))
+          kbuild.write_text(kbuild_text[:gate_start] + new_gate + kbuild_text[gate_end:])
+
 
           def add_decl_before(path, marker, declaration):
               p = root / path
