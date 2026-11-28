@@ -165,10 +165,18 @@ jobs:
           add_decl_before("fs/exec.c", r"(?m)^static int do_execveat_common\s*\(",
               "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n"
               "        void *argv, void *envp, int *flags);")
-          inject_after_decl("fs/exec.c",
-              r"(?m)^static int do_execveat_common\s*\([^)]*\)\s*\{",
-              "struct linux_binprm *bprm;",
-              "ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);")
+          exec_path = root / "fs/exec.c"
+          exec_text = exec_path.read_text()
+          exec_pattern = r"(?m)^static int do_execveat_common\s*\([^)]*\)\s*\{"
+          exec_matches = list(re.finditer(exec_pattern, exec_text, re.S))
+          exec_call = "ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);"
+          if len(exec_matches) != 1:
+              raise SystemExit(f"Expected one do_execveat_common definition, got {len(exec_matches)}")
+          if exec_call not in exec_text:
+              m = exec_matches[0]
+              insertion = "\n#ifdef CONFIG_KSU\n\t" + exec_call + "\n#endif\n"
+              exec_text = exec_text[:m.end()] + insertion + exec_text[m.end():]
+              exec_path.write_text(exec_text)
 
           add_decl_before("fs/open.c", r"(?m)^(?:static\s+)?(?:long|int)\s+do_faccessat\s*\(",
               "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n"
