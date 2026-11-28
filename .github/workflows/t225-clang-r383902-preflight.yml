@@ -25,15 +25,21 @@ jobs:
           curl --fail --location --retry 3 --retry-all-errors \
             'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/clang-r383902.tar.gz' \
             -o work/clang-r383902.tar.gz
+          echo '80feccb9f7afc451e3d7c1846f666df2d7badd47852e4a14836f15900c5682ac  work/clang-r383902.tar.gz' | sha256sum --check
           sha256sum work/clang-r383902.tar.gz | tee evidence/clang-archive-sha256.txt
-          tar -tzf work/clang-r383902.tar.gz | head -100 > evidence/clang-archive-head.txt
+          tar -tzf work/clang-r383902.tar.gz > evidence/clang-archive-list.txt
+          sed -n '1,100p' evidence/clang-archive-list.txt > evidence/clang-archive-head.txt
           tar -xzf work/clang-r383902.tar.gz -C toolchain --no-same-owner --no-same-permissions
           test -x toolchain/bin/clang
+          test -x toolchain/bin/clang++
           test -x toolchain/bin/ld.lld
-          toolchain/bin/clang --version | tee evidence/clang-version.txt
-          toolchain/bin/ld.lld --version | tee evidence/lld-version.txt
-          toolchain/bin/llvm-ar --version | head -2 > evidence/llvm-ar-version.txt
-          aarch64-linux-gnu-ld --version | head -2 > evidence/aarch64-binutils-version.txt
+          find toolchain/bin -maxdepth 1 -type f -o -type l | sort > evidence/toolchain-bin-files.txt
+          toolchain/bin/clang --version > evidence/clang-version.txt
+          toolchain/bin/ld.lld --version > evidence/lld-version.txt
+          toolchain/bin/llvm-ar --version > evidence/llvm-ar-version.txt
+          aarch64-linux-gnu-ld --version > evidence/aarch64-binutils-version.txt
+          sed -n '1,2p' evidence/llvm-ar-version.txt > evidence/llvm-ar-version-short.txt
+          sed -n '1,2p' evidence/aarch64-binutils-version.txt > evidence/aarch64-binutils-version-short.txt
           file toolchain/bin/clang > evidence/clang-file.txt
           {
             echo 'AOSP Gitiles source commit: 0e9e7035bf8ad42437c6156e5950eab13655b26c'
