@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 180
     steps:
       - name: Checkout project
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -119,6 +119,7 @@ jobs:
                   raise SystemExit(f"Could not find function end in {path}")
               body = text[body_start:body_end]
               if body.count(declaration_line) != 1:
+                  print("HOOK_DIAGNOSTIC_BODY=" + repr(body[:12000]))
                   raise SystemExit(f"Expected one declaration '{declaration_line}' in {path}, got {body.count(declaration_line)}")
               insert_at = body_start + body.index(declaration_line) + len(declaration_line)
               insertion = "\n#ifdef CONFIG_KSU\n\t" + code + "\n#endif\n"
@@ -251,7 +252,7 @@ jobs:
 
       - name: Upload compile-only evidence and kernel outputs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: t225-beye4-kernelsu-compile-only
           path: evidence/
