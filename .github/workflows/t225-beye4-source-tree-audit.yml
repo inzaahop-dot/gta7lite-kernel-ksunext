@@ -1,0 +1,102 @@
+name: T225 BEYE4 source tree audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - work/t225-beye4-source-tree-audit
+
+permissions:
+  contents: read
+
+jobs:
+  assemble-and-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install archive tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential bc bison flex libssl-dev libelf-dev python3 unzip
+
+      - name: Download and verify Samsung OSRC release 13155 mirror archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work evidence source
+          curl --fail --location --retry 3 'https://archive.org/download/samsung-opensource-13155/SM-T220_14_Opensource.zip' -o work/t220.zip
+          curl --fail --location --retry 3 'https://archive.org/download/samsung-opensource-13155/SM-T225_T225N_T227_14_Opensource_dts.zip' -o work/t225-delta.zip
+          echo '5bed82eb953cd6b726a6776e161bac1f904ec8c45afdb42ed2ac3648aaa9e806  work/t220.zip' | sha256sum --check
+          echo 'a4597bf68e43a6c9462ac775f2980b39d8cb6b4fd95b6bc99ef87f9c29ab3634  work/t225-delta.zip' | sha256sum --check
+          sha256sum work/*.zip > evidence/archive-sha256.txt
+
+      - name: Assemble T220 base plus T225 BEYE4 delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work/t220-outer work/delta-outer source
+          unzip -q work/t220.zip -d work/t220-outer
+          unzip -q work/t225-delta.zip -d work/delta-outer
+          test -s work/t220-outer/Kernel.tar.gz
+          test -s work/delta-outer/T225XXSBEYE4_kernel.tar.gz
+          tar -tzf work/t220-outer/Kernel.tar.gz > evidence/kernel-member-list.txt
+          tar -xzf work/t220-outer/Kernel.tar.gz -C source --no-same-owner --no-same-permissions
+          tar -tzf work/delta-outer/T225XXSBEYE4_kernel.tar.gz > evidence/t225-delta-member-list.txt
+          # The T225 archive contains a top-level Kernel/ directory; strip it to overlay the base.
+          tar -xzf work/delta-outer/T225XXSBEYE4_kernel.tar.gz -C source --strip-components=1 --no-same-owner --no-same-permissions
+          cp work/t220-outer/README_Kernel.txt evidence/
+          cp work/delta-outer/T225XXSBEYE4_kernel.txt evidence/
+          test -f source/Makefile
+          test -f source/arch/arm64/configs/gta7lite_defconfig
+          test -f source/arch/arm64/configs/gta7lite_00_defconfig
+          test -f source/arch/arm64/boot/dts/mediatek/Makefile
+          test -f source/build_kernel.sh
+
+      - name: Inspect exact assembled source and KSU integration prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo '=== Kernel version ==='
+            grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION) =' source/Makefile
+            echo '=== Build script ==='
+            sed -n '1,240p' source/build_kernel.sh
+            echo '=== Samsung kernel README ==='
+            sed -n '1,220p' evidence/README_Kernel.txt
+            echo '=== T225 build instructions ==='
+            sed -n '1,180p' evidence/T225XXSBEYE4_kernel.txt
+            echo '=== Makefile compiler settings ==='
+            grep -nE '^(ARCH|CROSS_COMPILE|CC|CLANG|CLANG_TRIPLE|HOSTCC|HOSTCXX)[[:space:]]*[:?+]?=' source/Makefile || true
+            echo '=== Clang r383902 references in source archive ==='
+            grep -RIl --exclude-dir=.git 'clang-r383902' source | head -100 || true
+            echo '=== Toolchain directory presence ==='
+            find source/toolchain -maxdepth 5 -type f -name clang -o -type d -name 'clang-r383902*' 2>/dev/null | head -100 || true
+            echo '=== Defconfig kernel and KSU symbols ==='
+            grep -E '^(CONFIG_(KSU|KPROBES|KRETPROBES|FTRACE|FUNCTION_TRACER|SECURITY_DEFEX|BUILD_ARM64))' source/arch/arm64/configs/gta7lite_defconfig || true
+            echo '=== Manual-hook candidate function locations ==='
+            for f in fs/exec.c fs/open.c fs/read_write.c fs/stat.c kernel/reboot.c; do
+              echo "--- $f"
+              grep -nE 'do_execve|compat_do_execve|faccessat\(|SYSCALL_DEFINE.*(read|newfstatat|reboot)|sys_reboot' "source/$f" | head -60 || true
+            done
+            echo '=== Source archive build output target ==='
+            grep -nE 'Image.gz|Image|dtb|dtbo|modules' source/build_kernel.sh source/arch/arm64/Makefile source/arch/arm64/boot/Makefile 2>/dev/null | head -100 || true
+          } > evidence/source-audit.txt
+          find source -type f -print0 | sort -z | xargs -0 sha256sum > evidence/source-file-sha256.txt
+          {
+            echo "Project commit: $GITHUB_SHA"
+            echo 'Base: Samsung OSRC release 13155 SM-T220_14_Opensource.zip'
+            echo 'Delta: Samsung OSRC release 13155 T225XXSBEYE4_kernel.tar.gz'
+            echo 'Archive hashes are mirror integrity pins, not Samsung-authenticated signatures.'
+            echo 'No KernelSU changes, kernel build, package, signing, publishing, or device operation is performed by this audit.'
+          } > evidence/manifest.txt
+
+      - name: Upload assembled source audit evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: t225-beye4-source-tree-audit
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
