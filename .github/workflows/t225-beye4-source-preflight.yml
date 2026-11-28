@@ -2,6 +2,9 @@ name: T225 BEYE4 source and toolchain preflight
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - work/t225-beye4-preflight-clean
 
 permissions:
   contents: read
