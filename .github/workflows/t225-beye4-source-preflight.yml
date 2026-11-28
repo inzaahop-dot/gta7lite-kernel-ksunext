@@ -1,0 +1,60 @@
+name: T225 BEYE4 source and toolchain preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-source-inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download pinned Samsung OSRC release archives from mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence work
+          curl --fail --location --retry 3 \
+            'https://archive.org/download/samsung-opensource-13155/SM-T220_14_Opensource.zip' \
+            -o work/SM-T220_14_Opensource.zip
+          curl --fail --location --retry 3 \
+            'https://archive.org/download/samsung-opensource-13155/SM-T225_T225N_T227_14_Opensource_dts.zip' \
+            -o work/SM-T225_T225N_T227_14_Opensource_dts.zip
+          echo '5bed82eb953cd6b726a6776e161bac1f904ec8c45afdb42ed2ac3648aaa9e806  work/SM-T220_14_Opensource.zip' | sha256sum --check
+          echo 'a4597bf68e43a6c9462ac775f2980b39d8cb6b4fd95b6bc99ef87f9c29ab3634  work/SM-T225_T225N_T227_14_Opensource_dts.zip' | sha256sum --check
+          sha256sum work/*.zip | tee evidence/archive-sha256.txt
+          unzip -l work/SM-T220_14_Opensource.zip > evidence/t220-outer-list.txt
+          unzip -l work/SM-T225_T225N_T227_14_Opensource_dts.zip > evidence/t225-delta-outer-list.txt
+          unzip -p work/SM-T220_14_Opensource.zip Kernel.tar.gz > work/Kernel.tar.gz
+          unzip -p work/SM-T220_14_Opensource.zip Platform.tar.gz > work/Platform.tar.gz
+          unzip -p work/SM-T225_T225N_T227_14_Opensource_dts.zip T225XXSBEYE4_kernel.tar.gz > work/T225XXSBEYE4_kernel.tar.gz
+          unzip -p work/SM-T225_T225N_T227_14_Opensource_dts.zip T225XXSBEYE4_kernel.txt > evidence/T225XXSBEYE4_kernel.txt
+          tar -tzf work/Kernel.tar.gz > evidence/kernel-archive-list.txt
+          tar -tzf work/Platform.tar.gz > evidence/platform-archive-list.txt
+          tar -tzf work/T225XXSBEYE4_kernel.tar.gz > evidence/t225-delta-list.txt
+          grep -E 'clang-r383902|clang.*/bin/clang|toolchain/clang' evidence/platform-archive-list.txt > evidence/clang-toolchain-paths.txt || true
+          grep -E 'gta7lite_defconfig|gta7lite_00_defconfig|arch/arm64/boot/dts/mediatek/Makefile' evidence/t225-delta-list.txt > evidence/t225-required-files.txt
+          grep -E 'gta7lite_defconfig|mt8768t_gta7lite_eur_open_00.dts|mt8768t-gta7lite_common.dtsi|Makefile' evidence/kernel-archive-list.txt > evidence/t220-required-files.txt
+          {
+            echo "Project commit: $GITHUB_SHA"
+            echo "Source release: Samsung OSRC release 13155 (metadata association; archive bytes from Internet Archive mirror)"
+            echo "T220 archive SHA-256: $(sha256sum work/SM-T220_14_Opensource.zip | cut -d' ' -f1)"
+            echo "T225 delta SHA-256: $(sha256sum work/SM-T225_T225N_T227_14_Opensource_dts.zip | cut -d' ' -f1)"
+            echo "This job does NOT compile, package, sign, publish, or flash a kernel."
+            echo "Mirror hashes are integrity pins, not Samsung-authenticated signatures."
+          } > evidence/manifest.txt
+
+      - name: Upload source and toolchain evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: t225-beye4-source-preflight
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
