@@ -1,0 +1,229 @@
+name: T225 BEYE4 KernelSU Next compile-only test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - work/t225-beye4-ksu-compile-test
+
+permissions:
+  contents: read
+
+jobs:
+  compile-ksu-kernel:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential flex git libelf-dev libncurses-dev \
+            libssl-dev python3 unzip zip zlib1g-dev device-tree-compiler
+
+      - name: Download and verify Samsung OSRC source archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work source evidence toolchain
+          curl --fail --location --retry 3 'https://archive.org/download/samsung-opensource-13155/SM-T220_14_Opensource.zip' -o work/t220.zip
+          curl --fail --location --retry 3 'https://archive.org/download/samsung-opensource-13155/SM-T225_T225N_T227_14_Opensource_dts.zip' -o work/t225-delta.zip
+          echo '5bed82eb953cd6b726a6776e161bac1f904ec8c45afdb42ed2ac3648aaa9e806  work/t220.zip' | sha256sum --check
+          echo 'a4597bf68e43a6c9462ac775f2980b39d8cb6b4fd95b6bc99ef87f9c29ab3634  work/t225-delta.zip' | sha256sum --check
+          sha256sum work/*.zip > evidence/source-archive-sha256.txt
+          mkdir -p work/t220-outer work/delta-outer
+          unzip -q work/t220.zip -d work/t220-outer
+          unzip -q work/t225-delta.zip -d work/delta-outer
+          tar -xzf work/t220-outer/Kernel.tar.gz -C source --no-same-owner --no-same-permissions
+          tar -xzf work/delta-outer/T225XXSBEYE4_kernel.tar.gz -C source --strip-components=1 --no-same-owner --no-same-permissions
+          test -f source/arch/arm64/configs/gta7lite_defconfig
+          test -f source/arch/arm64/boot/dts/mediatek/Makefile
+
+      - name: Download pinned AOSP Clang r383902
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 --retry-all-errors \
+            'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/clang-r383902.tar.gz' \
+            -o work/clang-r383902.tar.gz
+          sha256sum work/clang-r383902.tar.gz > evidence/clang-archive-sha256.txt
+          tar -xzf work/clang-r383902.tar.gz -C toolchain --no-same-owner --no-same-permissions
+          test -x toolchain/bin/clang
+          test -x toolchain/bin/ld.lld
+          test -x toolchain/bin/aarch64-linux-gnu-ld
+          toolchain/bin/clang --version | tee evidence/clang-version.txt
+          toolchain/bin/ld.lld --version | tee evidence/lld-version.txt
+          toolchain/bin/aarch64-linux-gnu-ld --version | head -2 > evidence/cross-linker-version.txt
+
+      - name: Pin KernelSU Next legacy source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/KernelSU-Next/KernelSU-Next.git work/KernelSU-Next
+          git -C work/KernelSU-Next checkout --detach e5f5ec998de88b9fc43c62cff8f7ae12d3f4800a
+          test "$(git -C work/KernelSU-Next rev-parse HEAD)" = "e5f5ec998de88b9fc43c62cff8f7ae12d3f4800a"
+          git -C work/KernelSU-Next log -1 --oneline > evidence/kernelsu-source-commit.txt
+          ln -s ../../work/KernelSU-Next/kernel source/drivers/kernelsu
+
+      - name: Integrate pinned KernelSU Next manual hooks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("source")
+
+          def add_declarations(path, block):
+              p = root / path
+              text = p.read_text()
+              if block.strip() in text:
+                  return
+              lines = text.splitlines()
+              include_positions = [i for i, line in enumerate(lines[:240]) if line.lstrip().startswith("#include")]
+              if not include_positions:
+                  raise SystemExit(f"No include block found in {path}")
+              idx = max(include_positions) + 1
+              lines[idx:idx] = ["", "#ifdef CONFIG_KSU", *block.splitlines(), "#endif", ""]
+              p.write_text("\n".join(lines) + "\n")
+
+          def inject_syscall(path, pattern, code):
+              p = root / path
+              text = p.read_text()
+              if code.strip() in text:
+                  return
+              rx = re.compile(pattern, re.S)
+              m = rx.search(text)
+              if not m:
+                  raise SystemExit(f"Could not uniquely locate target syscall in {path}: {pattern}")
+              # Insert immediately after the opening brace captured by the pattern.
+              text = text[:m.end()] + "\n#ifdef CONFIG_KSU\n" + code + "\n#endif\n" + text[m.end():]
+              p.write_text(text)
+
+          add_declarations("fs/exec.c", """extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+                  void *argv, void *envp, int *flags);""")
+          for fn in ("do_execve", "compat_do_execve"):
+              p = root / "fs/exec.c"
+              text = p.read_text()
+              if f"ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);" not in text:
+                  rx = re.compile(r"((?:static\\s+)?int\\s+" + fn + r"\\s*\\([^)]*\\)\\s*\\{)(.*?)(\\n\\})", re.S)
+                  m = rx.search(text)
+                  if not m:
+                      raise SystemExit(f"Could not locate {fn} in fs/exec.c")
+                  body = m.group(2)
+                  target = "return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);"
+                  if target not in body:
+                      raise SystemExit(f"Expected do_execveat_common return not found in {fn}")
+                  body = body.replace(target,
+                      "ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\\n\\t" + target, 1)
+                  text = text[:m.start(2)] + body + text[m.end(2):]
+                  p.write_text(text)
+
+          add_declarations("fs/open.c", """extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
+                  int *mode, int *flags);""")
+          inject_syscall("fs/open.c", r"(SYSCALL_DEFINE3\\s*\\(\\s*faccessat\\b[^)]*\\)\\s*\\{)",
+              "\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
+
+          add_declarations("fs/read_write.c", """extern void ksu_handle_sys_read(unsigned int fd);""")
+          inject_syscall("fs/read_write.c", r"(SYSCALL_DEFINE3\\s*\\(\\s*read\\b[^)]*\\)\\s*\\{)",
+              "\tksu_handle_sys_read(fd);")
+
+          add_declarations("fs/stat.c", """extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
+                  int *flags);""")
+          inject_syscall("fs/stat.c", r"(SYSCALL_DEFINE4\\s*\\(\\s*newfstatat\\b[^)]*\\)\\s*\\{)",
+              "\tksu_handle_stat(&dfd, &filename, &flag);")
+
+          add_declarations("kernel/reboot.c", """extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
+                  void __user **arg);""")
+          inject_syscall("kernel/reboot.c", r"(SYSCALL_DEFINE4\\s*\\(\\s*reboot\\b[^)]*\\)\\s*\\{)",
+              "\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);")
+
+          # Wire the in-tree driver directory exactly once.
+          p = root / "drivers/Makefile"
+          text = p.read_text()
+          if "obj-$(CONFIG_KSU) += kernelsu/" not in text:
+              p.write_text(text.rstrip() + "\\n\\nobj-$(CONFIG_KSU) += kernelsu/\\n")
+
+          p = root / "drivers/Kconfig"
+          text = p.read_text()
+          source_line = 'source "drivers/kernelsu/Kconfig"'
+          if source_line not in text:
+              idx = text.rfind("endmenu")
+              if idx < 0:
+                  raise SystemExit("drivers/Kconfig has no endmenu")
+              text = text[:idx] + source_line + "\\n\\n" + text[idx:]
+              p.write_text(text)
+
+          p = root / "arch/arm64/configs/gta7lite_defconfig"
+          text = p.read_text()
+          if "CONFIG_KSU=y" not in text:
+              text += "\\n# KernelSU Next\\nCONFIG_KSU=y\\nCONFIG_KSU_MANUAL_HOOK=y\\n"
+          elif "CONFIG_KSU_MANUAL_HOOK=y" not in text:
+              text += "\\nCONFIG_KSU_MANUAL_HOOK=y\\n"
+          p.write_text(text)
+
+          print("Pinned legacy KernelSU manual hooks integrated.")
+          PY
+
+      - name: Configure LTE BEYE4 kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+          export ANDROID_MAJOR_VERSION=r
+          CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-gnu-"
+          CC="$GITHUB_WORKSPACE/toolchain/bin/clang"
+          HOSTCC="$GITHUB_WORKSPACE/toolchain/bin/clang"
+          HOSTCXX="$GITHUB_WORKSPACE/toolchain/bin/clang++"
+          make -C source O="$GITHUB_WORKSPACE/source/out" ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" CC="$CC" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" \
+            CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y \
+            gta7lite_defconfig 2>&1 | tee evidence/configure.log
+          grep -E '^(CONFIG_KSU=y|CONFIG_KSU_MANUAL_HOOK=y|CONFIG_KPROBES=y|CONFIG_KRETPROBES=y)' source/out/.config | tee evidence/ksu-config.txt
+          grep -q '^CONFIG_KSU=y$' source/out/.config
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' source/out/.config
+
+      - name: Compile LTE BEYE4 kernel with KernelSU Next
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$GITHUB_WORKSPACE/toolchain/bin:$PATH"
+          export ANDROID_MAJOR_VERSION=r
+          CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/bin/aarch64-linux-gnu-"
+          CC="$GITHUB_WORKSPACE/toolchain/bin/clang"
+          HOSTCC="$GITHUB_WORKSPACE/toolchain/bin/clang"
+          HOSTCXX="$GITHUB_WORKSPACE/toolchain/bin/clang++"
+          make -C source O="$GITHUB_WORKSPACE/source/out" ARCH=arm64 \
+            CROSS_COMPILE="$CROSS_COMPILE" CC="$CC" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" \
+            CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y \
+            -j2 2>&1 | tee evidence/kernel-build.log
+          test -s source/out/arch/arm64/boot/Image.gz
+          test -s source/out/arch/arm64/boot/dts/mediatek/mt8768t_gta7lite_eur_open_00.dtb
+          cp source/out/arch/arm64/boot/Image.gz evidence/
+          cp source/out/arch/arm64/boot/dts/mediatek/mt8768t_gta7lite_eur_open_00.dtb evidence/
+          cp source/out/.config evidence/kernel-config
+          cp source/out/System.map evidence/System.map
+          sha256sum evidence/Image.gz evidence/mt8768t_gta7lite_eur_open_00.dtb > evidence/build-output-sha256.txt
+          {
+            echo 'Build type: compile-only; no boot image or flashable package created.'
+            echo 'Target: SM-T225 LTE, T225XXSBEYE4, Linux 4.19.191.'
+            echo 'KernelSU Next: legacy commit e5f5ec998de88b9fc43c62cff8f7ae12d3f4800a.'
+            echo 'Toolchain: AOSP Clang r383902 from pinned Gitiles commit 0e9e7035bf8ad42437c6156e5950eab13655b26c.'
+            echo 'Archive hashes are mirror integrity pins, not Samsung-authenticated signatures.'
+            echo 'No device operation was performed.'
+          } > evidence/manifest.txt
+
+      - name: Upload compile-only evidence and kernel outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: t225-beye4-kernelsu-compile-only
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 14
