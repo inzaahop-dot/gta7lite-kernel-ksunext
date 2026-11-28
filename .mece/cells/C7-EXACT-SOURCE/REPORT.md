@@ -35,7 +35,12 @@ The T225-specific `T225XXSBEYE4_kernel.txt` instructs:
 
 **Do not use the bundled `build_kernel.sh` unchanged for the LTE target.** It defaults to `gta7litewifi_defconfig`, a Wi-Fi configuration, and uses a separate GCC 4.9 toolchain path. The T225-specific instructions select the LTE defconfig and Clang r383902.
 
-The assembled source tree itself does not contain the Clang toolchain. A separate CI preflight is testing the AOSP Gitiles `clang-r383902` directory pinned at commit `0e9e7035bf8ad42437c6156e5950eab13655b26c`. The compiler is not yet considered available until that run completes and the version is verified.
+The assembled source tree itself does not contain the Clang toolchain. A separate CI preflight is testing the AOSP Gitiles `clang-r383902` directory pinned at commit `0e9e7035bf8ad42437c6156e5950eab13655b26c`. The toolchain preflight [run 46154239720](https://github.com/inzaahop-dot/gta7lite-kernel-ksunext/actions/runs/46154239720) completed successfully and reported:
+- Android Clang `11.0.1` (6443078 based on r383902)
+- LLD `11.0.1`
+- AOSP Gitiles commit `0e9e7035bf8ad42437c6156e5950eab13655b26c`, directory tree `34feae7abc38fffe258af1842a4c19746368cec6`
+
+The Gitiles-generated tarball SHA-256 varied between downloads from the same immutable commit, so the build pins the Gitiles commit and verifies the compiler version rather than treating the generated compressed archive hash as a stable release checksum. The Clang directory does not include `aarch64-linux-gnu-*` binutils; the compile-only workflow installs AArch64 GNU binutils separately and places those tools under the documented cross-prefix. This is recorded as a toolchain deviation to review against Samsung's build environment.
 
 ## 3. KernelSU Next source pin and manual-hook adaptation
 
