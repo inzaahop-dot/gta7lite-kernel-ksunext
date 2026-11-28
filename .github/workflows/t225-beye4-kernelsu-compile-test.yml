@@ -91,25 +91,33 @@ jobs:
           def add_decl_before(path, marker, declaration):
               p = root / path
               text = p.read_text()
-              block = "#ifdef CONFIG_KSU\n" + declaration + "\n#endif\n\n"
               if declaration in text:
                   return
               m = re.search(marker, text, re.S)
               if not m:
                   raise SystemExit(f"Declaration insertion point not found: {path} {marker}")
+              block = "#ifdef CONFIG_KSU\n" + declaration + "\n#endif\n\n"
               p.write_text(text[:m.start()] + block + text[m.start():])
 
-          def inject_syscall(path, pattern, code):
+          def inject_after_decl(path, function_pattern, declaration_line, code):
               p = root / path
               text = p.read_text()
               if code in text:
                   return
-              matches = list(re.finditer(pattern, text, re.S))
+              matches = list(re.finditer(function_pattern, text, re.S))
               if len(matches) != 1:
-                  raise SystemExit(f"Expected one syscall match in {path}, got {len(matches)}")
+                  raise SystemExit(f"Expected one function match in {path}, got {len(matches)}")
               m = matches[0]
-              insertion = "\n#ifdef CONFIG_KSU\n" + code + "\n#endif\n"
-              p.write_text(text[:m.end()] + insertion + text[m.end():])
+              body_start = m.end()
+              body_end = text.find("\n}", body_start)
+              if body_end < 0:
+                  raise SystemExit(f"Could not find function end in {path}")
+              body = text[body_start:body_end]
+              if body.count(declaration_line) != 1:
+                  raise SystemExit(f"Expected one declaration '{declaration_line}' in {path}, got {body.count(declaration_line)}")
+              insert_at = body_start + body.index(declaration_line) + len(declaration_line)
+              insertion = "\n#ifdef CONFIG_KSU\n\t" + code + "\n#endif\n"
+              p.write_text(text[:insert_at] + insertion + text[insert_at:])
 
           add_decl_before("fs/exec.c", r"(?m)^(?:static\s+)?int\s+do_execve\s*\(",
               "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n"
@@ -135,25 +143,33 @@ jobs:
           add_decl_before("fs/open.c", r"SYSCALL_DEFINE3\s*\(\s*faccessat\b",
               "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n"
               "        int *mode, int *flags);")
-          inject_syscall("fs/open.c", r"(SYSCALL_DEFINE3\s*\(\s*faccessat\b[^)]*\)\s*\{)",
-              "\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
+          inject_after_decl("fs/open.c",
+              r"SYSCALL_DEFINE3\s*\(\s*faccessat\b[^)]*\)\s*\{",
+              "unsigned int lookup_flags = LOOKUP_FOLLOW;",
+              "ksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
 
           add_decl_before("fs/read_write.c", r"SYSCALL_DEFINE3\s*\(\s*read\b",
               "extern void ksu_handle_sys_read(unsigned int fd);")
-          inject_syscall("fs/read_write.c", r"(SYSCALL_DEFINE3\s*\(\s*read\b[^)]*\)\s*\{)",
-              "\tksu_handle_sys_read(fd);")
+          inject_after_decl("fs/read_write.c",
+              r"SYSCALL_DEFINE3\s*\(\s*read\b[^)]*\)\s*\{",
+              "ssize_t ret = -EBADF;",
+              "ksu_handle_sys_read(fd);")
 
           add_decl_before("fs/stat.c", r"SYSCALL_DEFINE4\s*\(\s*newfstatat\b",
               "extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n"
               "        int *flags);")
-          inject_syscall("fs/stat.c", r"(SYSCALL_DEFINE4\s*\(\s*newfstatat\b[^)]*\)\s*\{)",
-              "\tksu_handle_stat(&dfd, &filename, &flag);")
+          inject_after_decl("fs/stat.c",
+              r"SYSCALL_DEFINE4\s*\(\s*newfstatat\b[^)]*\)\s*\{",
+              "int error;",
+              "ksu_handle_stat(&dfd, &filename, &flag);")
 
           add_decl_before("kernel/reboot.c", r"SYSCALL_DEFINE4\s*\(\s*reboot\b",
               "extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,\n"
               "        void __user **arg);")
-          inject_syscall("kernel/reboot.c", r"(SYSCALL_DEFINE4\s*\(\s*reboot\b[^)]*\)\s*\{)",
-              "\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);")
+          inject_after_decl("kernel/reboot.c",
+              r"SYSCALL_DEFINE4\s*\(\s*reboot\b[^)]*\)\s*\{",
+              "int ret = 0;",
+              "ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);")
 
           p = root / "drivers/Makefile"
           text = p.read_text()
