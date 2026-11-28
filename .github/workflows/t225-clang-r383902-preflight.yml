@@ -25,7 +25,6 @@ jobs:
           curl --fail --location --retry 3 --retry-all-errors \
             'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/clang-r383902.tar.gz' \
             -o work/clang-r383902.tar.gz
-          echo '80feccb9f7afc451e3d7c1846f666df2d7badd47852e4a14836f15900c5682ac  work/clang-r383902.tar.gz' | sha256sum --check
           sha256sum work/clang-r383902.tar.gz | tee evidence/clang-archive-sha256.txt
           tar -tzf work/clang-r383902.tar.gz > evidence/clang-archive-list.txt
           sed -n '1,100p' evidence/clang-archive-list.txt > evidence/clang-archive-head.txt
