@@ -174,11 +174,11 @@ jobs:
               "int error;",
               "ksu_handle_stat(&dfd, &filename, &flag);")
 
-          add_decl_before("kernel/reboot.c", r"SYSCALL_DEFINE4\s*\(\s*reboot\b",
+          add_decl_before("kernel/reboot.c", r"(?m)^SYSCALL_DEFINE4\s*\(\s*reboot\b",
               "extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,\n"
               "        void __user **arg);")
           inject_after_decl("kernel/reboot.c",
-              r"SYSCALL_DEFINE4\s*\(\s*reboot\b[^)]*\)\s*\{",
+              r"(?m)^SYSCALL_DEFINE4\s*\(\s*reboot\b[^)]*\)\s*\{",
               "int ret = 0;",
               "ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);")
 
