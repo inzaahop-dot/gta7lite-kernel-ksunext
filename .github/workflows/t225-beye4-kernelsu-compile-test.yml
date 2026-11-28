@@ -41,6 +41,7 @@ jobs:
           unzip -q work/t225-delta.zip -d work/delta-outer
           tar -xzf work/t220-outer/Kernel.tar.gz -C source --no-same-owner --no-same-permissions
           tar -xzf work/delta-outer/T225XXSBEYE4_kernel.tar.gz -C source --strip-components=1 --no-same-owner --no-same-permissions
+          chmod -R u+rwX source
           test -f source/arch/arm64/configs/gta7lite_defconfig
           test -f source/arch/arm64/boot/dts/mediatek/Makefile
           grep -nE 'gta7lite|mt8768t' source/arch/arm64/boot/dts/mediatek/Makefile | tee evidence/dtb-targets.txt
