@@ -1,0 +1,50 @@
+name: T225 BEYE4 Clang r383902 preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - work/t225-clang-r383902-preflight
+
+permissions:
+  contents: read
+
+jobs:
+  verify-clang:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Install AArch64 binutils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends binutils-aarch64-linux-gnu file
+
+      - name: Download pinned AOSP Clang r383902 directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p work toolchain evidence
+          curl --fail --location --retry 3 --retry-all-errors \
+            'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/clang-r383902.tar.gz' \
+            -o work/clang-r383902.tar.gz
+          sha256sum work/clang-r383902.tar.gz | tee evidence/clang-archive-sha256.txt
+          tar -tzf work/clang-r383902.tar.gz | head -100 > evidence/clang-archive-head.txt
+          tar -xzf work/clang-r383902.tar.gz -C toolchain --no-same-owner --no-same-permissions
+          test -x toolchain/bin/clang
+          test -x toolchain/bin/ld.lld
+          toolchain/bin/clang --version | tee evidence/clang-version.txt
+          toolchain/bin/ld.lld --version | tee evidence/lld-version.txt
+          toolchain/bin/llvm-ar --version | head -2 > evidence/llvm-ar-version.txt
+          aarch64-linux-gnu-ld --version | head -2 > evidence/aarch64-binutils-version.txt
+          file toolchain/bin/clang > evidence/clang-file.txt
+          {
+            echo 'AOSP Gitiles source commit: 0e9e7035bf8ad42437c6156e5950eab13655b26c'
+            echo 'AOSP directory: clang-r383902'
+            echo 'This is a toolchain availability check only; no kernel source is built or modified.'
+          } > evidence/manifest.txt
+
+      - name: Upload Clang evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: t225-clang-r383902-preflight
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
