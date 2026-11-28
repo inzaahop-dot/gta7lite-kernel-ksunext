@@ -89,7 +89,7 @@ jobs:
           def add_decl_before(path, marker, declaration):
               p = root / path
               text = p.read_text()
-              block = "#ifdef CONFIG_KSU\\n" + declaration + "\\n#endif\\n\\n"
+              block = "#ifdef CONFIG_KSU\n" + declaration + "\n#endif\n\n"
               if declaration in text:
                   return
               m = re.search(marker, text, re.S)
@@ -106,17 +106,17 @@ jobs:
               if len(matches) != 1:
                   raise SystemExit(f"Expected one syscall match in {path}, got {len(matches)}")
               m = matches[0]
-              insertion = "\\n#ifdef CONFIG_KSU\\n" + code + "\\n#endif\\n"
+              insertion = "\n#ifdef CONFIG_KSU\n" + code + "\n#endif\n"
               p.write_text(text[:m.end()] + insertion + text[m.end():])
 
-          add_decl_before("fs/exec.c", r"(?m)^(?:static\\s+)?int\\s+do_execve\\s*\\(",
-              "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\\n"
+          add_decl_before("fs/exec.c", r"(?m)^(?:static\s+)?int\s+do_execve\s*\(",
+              "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n"
               "        void *argv, void *envp, int *flags);")
 
           p = root / "fs/exec.c"
           text = p.read_text()
           for fn in ("do_execve", "compat_do_execve"):
-              rx = re.compile(r"((?:static\\s+)?int\\s+" + fn + r"\\s*\\([^)]*\\)\\s*\\{)(.*?)(\\n\\})", re.S)
+              rx = re.compile(r"((?:static\s+)?int\s+" + fn + r"\s*\([^)]*\)\s*\{)(.*?)(\n\})", re.S)
               m = rx.search(text)
               if not m:
                   raise SystemExit(f"Could not locate {fn} in fs/exec.c")
@@ -126,37 +126,37 @@ jobs:
               if call not in body:
                   if target not in body:
                       raise SystemExit(f"Expected do_execveat_common return not found in {fn}")
-                  body = body.replace(target, call + "\\n\\t" + target, 1)
+                  body = body.replace(target, call + "\n\t" + target, 1)
                   text = text[:m.start(2)] + body + text[m.end(2):]
           p.write_text(text)
 
-          add_decl_before("fs/open.c", r"SYSCALL_DEFINE3\\s*\\(\\s*faccessat\\b",
-              "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\\n"
+          add_decl_before("fs/open.c", r"SYSCALL_DEFINE3\s*\(\s*faccessat\b",
+              "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n"
               "        int *mode, int *flags);")
-          inject_syscall("fs/open.c", r"(SYSCALL_DEFINE3\\s*\\(\\s*faccessat\\b[^)]*\\)\\s*\\{)",
-              "\\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
+          inject_syscall("fs/open.c", r"(SYSCALL_DEFINE3\s*\(\s*faccessat\b[^)]*\)\s*\{)",
+              "\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
 
-          add_decl_before("fs/read_write.c", r"SYSCALL_DEFINE3\\s*\\(\\s*read\\b",
+          add_decl_before("fs/read_write.c", r"SYSCALL_DEFINE3\s*\(\s*read\b",
               "extern void ksu_handle_sys_read(unsigned int fd);")
-          inject_syscall("fs/read_write.c", r"(SYSCALL_DEFINE3\\s*\\(\\s*read\\b[^)]*\\)\\s*\\{)",
-              "\\tksu_handle_sys_read(fd);")
+          inject_syscall("fs/read_write.c", r"(SYSCALL_DEFINE3\s*\(\s*read\b[^)]*\)\s*\{)",
+              "\tksu_handle_sys_read(fd);")
 
-          add_decl_before("fs/stat.c", r"SYSCALL_DEFINE4\\s*\\(\\s*newfstatat\\b",
-              "extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\\n"
+          add_decl_before("fs/stat.c", r"SYSCALL_DEFINE4\s*\(\s*newfstatat\b",
+              "extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n"
               "        int *flags);")
-          inject_syscall("fs/stat.c", r"(SYSCALL_DEFINE4\\s*\\(\\s*newfstatat\\b[^)]*\\)\\s*\\{)",
-              "\\tksu_handle_stat(&dfd, &filename, &flag);")
+          inject_syscall("fs/stat.c", r"(SYSCALL_DEFINE4\s*\(\s*newfstatat\b[^)]*\)\s*\{)",
+              "\tksu_handle_stat(&dfd, &filename, &flag);")
 
-          add_decl_before("kernel/reboot.c", r"SYSCALL_DEFINE4\\s*\\(\\s*reboot\\b",
-              "extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,\\n"
+          add_decl_before("kernel/reboot.c", r"SYSCALL_DEFINE4\s*\(\s*reboot\b",
+              "extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,\n"
               "        void __user **arg);")
-          inject_syscall("kernel/reboot.c", r"(SYSCALL_DEFINE4\\s*\\(\\s*reboot\\b[^)]*\\)\\s*\\{)",
-              "\\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);")
+          inject_syscall("kernel/reboot.c", r"(SYSCALL_DEFINE4\s*\(\s*reboot\b[^)]*\)\s*\{)",
+              "\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);")
 
           p = root / "drivers/Makefile"
           text = p.read_text()
           if "obj-$(CONFIG_KSU) += kernelsu/" not in text:
-              p.write_text(text.rstrip() + "\\n\\nobj-$(CONFIG_KSU) += kernelsu/\\n")
+              p.write_text(text.rstrip() + "\n\nobj-$(CONFIG_KSU) += kernelsu/\n")
 
           p = root / "drivers/Kconfig"
           text = p.read_text()
@@ -165,15 +165,15 @@ jobs:
               idx = text.rfind("endmenu")
               if idx < 0:
                   raise SystemExit("drivers/Kconfig has no endmenu")
-              text = text[:idx] + source_line + "\\n\\n" + text[idx:]
+              text = text[:idx] + source_line + "\n\n" + text[idx:]
               p.write_text(text)
 
           p = root / "arch/arm64/configs/gta7lite_defconfig"
           text = p.read_text()
           if "CONFIG_KSU=y" not in text:
-              text += "\\n# KernelSU Next\\nCONFIG_KSU=y\\nCONFIG_KSU_MANUAL_HOOK=y\\n"
+              text += "\n# KernelSU Next\nCONFIG_KSU=y\nCONFIG_KSU_MANUAL_HOOK=y\n"
           elif "CONFIG_KSU_MANUAL_HOOK=y" not in text:
-              text += "\\nCONFIG_KSU_MANUAL_HOOK=y\\n"
+              text += "\nCONFIG_KSU_MANUAL_HOOK=y\n"
           p.write_text(text)
           print("Pinned legacy KernelSU manual hooks integrated.")
           PY
