@@ -61,6 +61,8 @@ jobs:
           test -x toolchain/bin/clang++
           test -x toolchain/bin/ld.lld
           toolchain/bin/clang --version > evidence/clang-version.txt
+          grep -q '11.0.1' evidence/clang-version.txt
+          grep -q 'r383902' evidence/clang-version.txt
           toolchain/bin/ld.lld --version > evidence/lld-version.txt
           find toolchain/bin -maxdepth 1 -type f -o -type l | sort > evidence/toolchain-bin-files.txt
           for tool in ar as ld nm objcopy objdump ranlib readelf size strings strip; do
