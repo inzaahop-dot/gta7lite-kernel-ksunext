@@ -94,23 +94,22 @@ jobs:
           root = Path("source")
 
           # Replace the pinned legacy Kbuild's stale reboot-only sentinel with
-          # validation of the four real manual hook call sites installed below.
+          # validation of the manual hooks actually integrated below.
           kbuild = Path("work/KernelSU-Next/kernel/Kbuild")
           kbuild_text = kbuild.read_text()
           gate_start = kbuild_text.find("ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)")
-          gate_end_marker = "endif\nendif"
+          gate_end_marker = "endif\\nendif"
           gate_end = kbuild_text.find(gate_end_marker, gate_start)
           if gate_start < 0 or gate_end < 0:
               raise SystemExit("Pinned KernelSU Kbuild hook gate changed; refusing blind patch")
           gate_end += len(gate_end_marker)
           new_gate = """ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)
-          HAVE_KSU_HOOK := $(shell grep -q "ksu_handle_execveat" $(srctree)/fs/exec.c && grep -q "ksu_handle_faccessat" $(srctree)/fs/open.c && grep -q "ksu_handle_sys_read" $(srctree)/fs/read_write.c && grep -q "ksu_handle_stat" $(srctree)/fs/stat.c && echo 0 || echo 1)
+          HAVE_KSU_HOOK := $(shell grep -q "ksu_handle_execveat" $(srctree)/fs/exec.c && grep -q "ksu_handle_faccessat" $(srctree)/fs/open.c && grep -q "ksu_handle_sys_read" $(srctree)/fs/read_write.c && grep -q "ksu_handle_stat" $(srctree)/fs/stat.c && grep -q "ksu_handle_newfstat_ret" $(srctree)/fs/stat.c && grep -q "ksu_handle_input_handle_event" $(srctree)/drivers/input/input.c && echo 0 || echo 1)
           ifeq ($(HAVE_KSU_HOOK),0)
-          $(info -- KernelSU-Next: Hook mode: Manual (execveat, faccessat, read, stat))
+          $(info -- KernelSU-Next: Hook mode: Manual (execveat, faccessat, read, stat, input))
           endif
           endif"""
           kbuild.write_text(kbuild_text[:gate_start] + new_gate + kbuild_text[gate_end:])
-
 
           def add_decl_before(path, marker, declaration):
               p = root / path
@@ -120,7 +119,7 @@ jobs:
               m = re.search(marker, text, re.S)
               if not m:
                   raise SystemExit(f"Declaration insertion point not found: {path} {marker}")
-              block = "#ifdef CONFIG_KSU\n" + declaration + "\n#endif\n\n"
+              block = "#ifdef CONFIG_KSU\\n" + declaration + "\\n#endif\\n\\n"
               p.write_text(text[:m.start()] + block + text[m.start():])
 
           def inject_after_decl(path, function_pattern, declaration_line, code):
@@ -133,47 +132,57 @@ jobs:
                   raise SystemExit(f"Expected one function match in {path}, got {len(matches)}")
               m = matches[0]
               body_start = m.end()
-              body_end = text.find("\n}", body_start)
+              body_end = text.find("\\n}", body_start)
               if body_end < 0:
                   raise SystemExit(f"Could not find function end in {path}")
               body = text[body_start:body_end]
               if body.count(declaration_line) != 1:
-                  print("HOOK_DIAGNOSTIC_BODY=" + repr(body[:12000]))
                   raise SystemExit(f"Expected one declaration '{declaration_line}' in {path}, got {body.count(declaration_line)}")
               insert_at = body_start + body.index(declaration_line) + len(declaration_line)
-              insertion = "\n#ifdef CONFIG_KSU\n\t" + code + "\n#endif\n"
+              insertion = "\\n#ifdef CONFIG_KSU\\n\\t" + code + "\\n#endif\\n"
               p.write_text(text[:insert_at] + insertion + text[insert_at:])
 
-          add_decl_before("fs/exec.c", r"(?m)^(?:static\s+)?int\s+do_execve\s*\(",
-              "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\n"
+          def inject_after_regex(path, function_pattern, statement_pattern, code):
+              p = root / path
+              text = p.read_text()
+              if code in text:
+                  return
+              funcs = list(re.finditer(function_pattern, text, re.S))
+              if len(funcs) != 1:
+                  raise SystemExit(f"Expected one target function in {path}, got {len(funcs)}")
+              fm = funcs[0]
+              body_start = fm.end()
+              body_end = text.find("\\n}", body_start)
+              if body_end < 0:
+                  raise SystemExit(f"Could not find function end in {path}")
+              body = text[body_start:body_end]
+              sm = re.search(statement_pattern, body, re.S)
+              if not sm:
+                  raise SystemExit(f"Expected statement not found in {path}: {statement_pattern}")
+              insert_at = body_start + sm.end()
+              insertion = "\\n#ifdef CONFIG_KSU\\n\\tif (!error)\\n\\t\\t" + code + "\\n#endif\\n"
+              p.write_text(text[:insert_at] + insertion + text[insert_at:])
+
+          # One hook in do_execveat_common covers native execve, compat execve,
+          # and execveat. Passing addresses of the real local arguments avoids
+          # the invalid pointer cast in the earlier wrapper-level integration.
+          add_decl_before("fs/exec.c", r"(?m)^static int do_execveat_common\\s*\\(",
+              "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\\n"
               "        void *argv, void *envp, int *flags);")
+          inject_after_decl("fs/exec.c",
+              r"(?m)^static int do_execveat_common\\s*\\([^)]*\\)\\s*\\{",
+              "struct linux_binprm *bprm;",
+              "ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);")
 
-          p = root / "fs/exec.c"
-          text = p.read_text()
-          for fn in ("do_execve", "compat_do_execve"):
-              rx = re.compile(r"((?:static\s+)?int\s+" + fn + r"\s*\([^)]*\)\s*\{)(.*?)(\n\})", re.S)
-              m = rx.search(text)
-              if not m:
-                  raise SystemExit(f"Could not locate {fn} in fs/exec.c")
-              body = m.group(2)
-              target = "return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);"
-              call = "ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);"
-              if call not in body:
-                  if target not in body:
-                      raise SystemExit(f"Expected do_execveat_common return not found in {fn}")
-                  body = body.replace(target, call + "\n\t" + target, 1)
-                  text = text[:m.start(2)] + body + text[m.end(2):]
-          p.write_text(text)
-
-          add_decl_before("fs/open.c", r"(?m)^(?:static\s+)?(?:long|int)\s+do_faccessat\s*\(",
-              "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n"
+          add_decl_before("fs/open.c", r"(?m)^(?:static\\s+)?(?:long|int)\\s+do_faccessat\\s*\\(",
+              "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\\n"
               "        int *mode, int *flags);")
           inject_after_decl("fs/open.c",
-              r"(?:static\s+)?(?:long|int)\s+do_faccessat\s*\([^)]*\)\s*\{",
+              r"(?:static\\s+)?(?:long|int)\\s+do_faccessat\\s*\\([^)]*\\)\\s*\\{",
               "unsigned int lookup_flags = LOOKUP_FOLLOW;",
               "ksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
 
-          add_decl_before("fs/read_write.c", r"SYSCALL_DEFINE3\s*\(\s*read\b",
+          add_decl_before("fs/read_write.c", r"SYSCALL_DEFINE3\\s*\\(\\s*read\\b",
               "extern void ksu_handle_sys_read(unsigned int fd);")
           p = root / "fs/read_write.c"
           text = p.read_text()
@@ -182,21 +191,56 @@ jobs:
           if call not in text:
               if text.count(target) != 1:
                   raise SystemExit(f"Expected one ksys_read return in fs/read_write.c, got {text.count(target)}")
-              text = text.replace(target, call + "\n\t" + target, 1)
+              text = text.replace(target, call + "\\n\\t" + target, 1)
               p.write_text(text)
 
-          add_decl_before("fs/stat.c", r"(?m)^SYSCALL_DEFINE4\s*\(\s*newfstatat\b",
-              "extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n"
-              "        int *flags);")
+          add_decl_before("fs/stat.c", r"(?m)^SYSCALL_DEFINE4\\s*\\(\\s*newfstatat\\b",
+              "extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\\n"
+              "        int *flags);\\n"
+              "extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);")
           inject_after_decl("fs/stat.c",
-              r"(?m)^SYSCALL_DEFINE4\s*\(\s*newfstatat\b[^)]*\)\s*\{",
+              r"(?m)^SYSCALL_DEFINE4\\s*\\(\\s*newfstatat\\b[^)]*\\)\\s*\\{",
               "int error;",
               "ksu_handle_stat(&dfd, &filename, &flag);")
+          inject_after_regex("fs/stat.c",
+              r"(?m)^SYSCALL_DEFINE2\\s*\\(\\s*newfstat\\b[^)]*\\)\\s*\\{",
+              r"if\\s*\\(!error\\)\\s*error\\s*=\\s*cp_new_stat\\s*\\(\\s*&stat\\s*,\\s*statbuf\\s*\\)\\s*;",
+              "ksu_handle_newfstat_ret(&fd, &statbuf);")
+
+          # Older 32-bit compat stat entry points exist only on some targets.
+          p = root / "fs/stat.c"
+          text = p.read_text()
+          fstat64_pattern = r"(?m)^SYSCALL_DEFINE2\\s*\\(\\s*fstat64\\b[^)]*\\)\\s*\\{"
+          if re.search(fstat64_pattern, text):
+              decl = "extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);"
+              if decl not in text:
+                  marker = re.search(fstat64_pattern, text)
+                  text = text[:marker.start()] + "#ifdef CONFIG_KSU\\n" + decl + "\\n#endif\\n\\n" + text[marker.start():]
+              if "ksu_handle_fstat64_ret(&fd, &statbuf);" not in text:
+                  fm = re.search(fstat64_pattern, text)
+                  body_end = text.find("\\n}", fm.end())
+                  body = text[fm.end():body_end]
+                  sm = re.search(r"if\\s*\\(!error\\)\\s*error\\s*=\\s*cp_new_stat64\\s*\\(\\s*&stat\\s*,\\s*statbuf\\s*\\)\\s*;", body, re.S)
+                  if not sm:
+                      raise SystemExit("fstat64 exists but cp_new_stat64 success path was not found")
+                  pos = fm.end() + sm.end()
+                  text = text[:pos] + "\\n#ifdef CONFIG_KSU\\n\\tif (!error)\\n\\t\\tksu_handle_fstat64_ret(&fd, &statbuf);\\n#endif\\n" + text[pos:]
+              p.write_text(text)
+
+          # Volume-down safe-mode detection is a required manual hook too.
+          add_decl_before("drivers/input/input.c", r"(?m)^void input_event\\s*\\(",
+              "extern bool ksu_input_hook;\\n"
+              "extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);")
+          inject_after_decl("drivers/input/input.c",
+              r"(?m)^void input_event\\s*\\([^)]*\\)\\s*\\{",
+              "unsigned long flags;",
+              "if (unlikely(ksu_input_hook))\\n"
+              "\\t\\tksu_handle_input_handle_event(&type, &code, &value);")
 
           p = root / "drivers/Makefile"
           text = p.read_text()
           if "obj-$(CONFIG_KSU) += kernelsu/" not in text:
-              p.write_text(text.rstrip() + "\n\nobj-$(CONFIG_KSU) += kernelsu/\n")
+              p.write_text(text.rstrip() + "\\n\\nobj-$(CONFIG_KSU) += kernelsu/\\n")
 
           p = root / "drivers/Kconfig"
           text = p.read_text()
@@ -205,17 +249,17 @@ jobs:
               idx = text.rfind("endmenu")
               if idx < 0:
                   raise SystemExit("drivers/Kconfig has no endmenu")
-              text = text[:idx] + source_line + "\n\n" + text[idx:]
+              text = text[:idx] + source_line + "\\n\\n" + text[idx:]
               p.write_text(text)
 
           p = root / "arch/arm64/configs/gta7lite_defconfig"
           text = p.read_text()
           if "CONFIG_KSU=y" not in text:
-              text += "\n# KernelSU Next\nCONFIG_KSU=y\nCONFIG_KSU_MANUAL_HOOK=y\n"
+              text += "\\n# KernelSU Next\\nCONFIG_KSU=y\\nCONFIG_KSU_MANUAL_HOOK=y\\n"
           elif "CONFIG_KSU_MANUAL_HOOK=y" not in text:
-              text += "\nCONFIG_KSU_MANUAL_HOOK=y\n"
+              text += "\\nCONFIG_KSU_MANUAL_HOOK=y\\n"
           p.write_text(text)
-          print("Pinned legacy KernelSU manual hooks integrated.")
+          print("Pinned KernelSU Next manual hooks integrated and statically validated.")
           PY
 
       - name: Configure LTE BEYE4 kernel
