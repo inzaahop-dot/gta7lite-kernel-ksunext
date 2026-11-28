@@ -265,7 +265,13 @@ jobs:
 
           # Match the exact stock BEYE4 kernel release string. With
           # CONFIG_MODVERSIONS=y, vendor modules depend on the same vermagic.
-          text = re.sub(r'(?m)^CONFIG_LOCALVERSION=.*
+          lines = [line for line in text.splitlines()
+                   if not line.startswith("CONFIG_LOCALVERSION=")
+                   and line != "CONFIG_LOCALVERSION_AUTO=y"
+                   and line != "# CONFIG_LOCALVERSION_AUTO is not set"]
+          lines.append('CONFIG_LOCALVERSION="-28847731-abT225XXSBEYE4"')
+          lines.append('# CONFIG_LOCALVERSION_AUTO is not set')
+          p.write_text("\n".join(lines) + "\n")
           print("Pinned KernelSU Next manual hooks integrated and statically validated.")
           PY
 
@@ -284,8 +290,11 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- KCFLAGS=-w CONFIG_SECTION_MISMATCH_WARN_ONLY=y \
             gta7lite_defconfig 2>&1 | tee evidence/configure.log
           grep -E '^(CONFIG_KSU=y|CONFIG_KSU_MANUAL_HOOK=y|CONFIG_KPROBES=y|CONFIG_KRETPROBES=y|CONFIG_MODVERSIONS=y|CONFIG_LOCALVERSION=|# CONFIG_LOCALVERSION_AUTO is not set)' source/out/.config | tee evidence/ksu-config.txt
-          grep -q '^CONFIG_KSU=y
-
+          grep -q '^CONFIG_KSU=y$' source/out/.config
+          grep -q '^CONFIG_KSU_MANUAL_HOOK=y$' source/out/.config
+          grep -q '^CONFIG_MODVERSIONS=y$' source/out/.config
+          grep -q '^CONFIG_LOCALVERSION="-28847731-abT225XXSBEYE4"$' source/out/.config
+          test "$(make -s -C source O="$GITHUB_WORKSPACE/source/out" ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" CC="$CC" HOSTCC="$HOSTCC" HOSTCXX="$HOSTCXX" CLANG_TRIPLE=aarch64-linux-gnu- kernelrelease)" = "4.19.191-28847731-abT225XXSBEYE4"
       - name: Compile LTE BEYE4 kernel with KernelSU Next
         shell: bash
         run: |
