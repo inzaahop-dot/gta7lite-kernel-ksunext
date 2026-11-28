@@ -43,6 +43,9 @@ jobs:
           tar -xzf work/delta-outer/T225XXSBEYE4_kernel.tar.gz -C source --strip-components=1 --no-same-owner --no-same-permissions
           test -f source/arch/arm64/configs/gta7lite_defconfig
           test -f source/arch/arm64/boot/dts/mediatek/Makefile
+          grep -nE 'gta7lite|mt8768t' source/arch/arm64/boot/dts/mediatek/Makefile | tee evidence/dtb-targets.txt
+          grep -q 'mt8768t_gta7lite_eur_open_00.dtb' source/arch/arm64/boot/dts/mediatek/Makefile
+          test -f source/arch/arm64/boot/dts/mediatek/mt8768t_gta7lite_eur_open_00.dts
 
       - name: Download pinned AOSP Clang r383902
         shell: bash
