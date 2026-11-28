@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential flex git libelf-dev libncurses-dev \
+            bc binutils-aarch64-linux-gnu bison build-essential flex git libelf-dev libncurses-dev \
             libssl-dev python3 unzip zip zlib1g-dev device-tree-compiler
 
       - name: Download and verify Samsung OSRC source archives
@@ -60,9 +60,11 @@ jobs:
           toolchain/bin/clang --version > evidence/clang-version.txt
           toolchain/bin/ld.lld --version > evidence/lld-version.txt
           find toolchain/bin -maxdepth 1 -type f -o -type l | sort > evidence/toolchain-bin-files.txt
-          if [ ! -x toolchain/bin/aarch64-linux-gnu-ld ]; then
-            ln -s "$(command -v aarch64-linux-gnu-ld)" toolchain/bin/aarch64-linux-gnu-ld
-          fi
+          for tool in ar as ld nm objcopy objdump ranlib readelf size strings strip; do
+            if [ ! -x "toolchain/bin/aarch64-linux-gnu-$tool" ]; then
+              ln -s "$(command -v aarch64-linux-gnu-$tool)" "toolchain/bin/aarch64-linux-gnu-$tool"
+            fi
+          done
           test -x toolchain/bin/aarch64-linux-gnu-ld
           toolchain/bin/aarch64-linux-gnu-ld --version > evidence/cross-linker-version.txt
 
