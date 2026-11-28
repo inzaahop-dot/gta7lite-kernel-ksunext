@@ -93,6 +93,26 @@ jobs:
 
           root = Path("source")
 
+          # Replace the pinned legacy Kbuild's stale reboot-only sentinel with
+          # validation of the four real manual hook call sites installed below.
+          kbuild = Path("work/KernelSU-Next/kernel/Kbuild")
+          kbuild_text = kbuild.read_text()
+          old_gate = """ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)
+          HAVE_KSU_HOOK := $(shell grep -q "ksu_handle_sys_reboot" $(srctree)/kernel/reboot.c && echo 0 || echo 1)
+          ifeq ($(HAVE_KSU_HOOK),0)
+          $(info -- KernelSU-Next: Hook mode: Manual)
+          endif
+          endif"""
+          new_gate = """ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)
+          HAVE_KSU_HOOK := $(shell grep -q "ksu_handle_execveat" $(srctree)/fs/exec.c && grep -q "ksu_handle_faccessat" $(srctree)/fs/open.c && grep -q "ksu_handle_sys_read" $(srctree)/fs/read_write.c && grep -q "ksu_handle_stat" $(srctree)/fs/stat.c && echo 0 || echo 1)
+          ifeq ($(HAVE_KSU_HOOK),0)
+          $(info -- KernelSU-Next: Hook mode: Manual (execveat, faccessat, read, stat))
+          endif
+          endif"""
+          if old_gate not in kbuild_text:
+              raise SystemExit("Pinned KernelSU Kbuild hook gate changed; refusing blind patch")
+          kbuild.write_text(kbuild_text.replace(old_gate, new_gate, 1))
+
           def add_decl_before(path, marker, declaration):
               p = root / path
               text = p.read_text()
@@ -173,14 +193,6 @@ jobs:
               r"(?m)^SYSCALL_DEFINE4\s*\(\s*newfstatat\b[^)]*\)\s*\{",
               "int error;",
               "ksu_handle_stat(&dfd, &filename, &flag);")
-
-          # This pinned KernelSU Next revision no longer defines a reboot callback.
-          # Its legacy Kbuild manual-hook gate still checks for this symbol name,
-          # so add a documented marker without declaring or calling a nonexistent function.
-          p = root / "kernel/reboot.c"
-          text = p.read_text()
-          if "ksu_handle_sys_reboot" not in text:
-              p.write_text(text.rstrip() + "\n\n/* KernelSU Next manual-hook compatibility marker: no reboot callback in this revision. */\n")
 
           p = root / "drivers/Makefile"
           text = p.read_text()
