@@ -98,7 +98,7 @@ jobs:
           kbuild = Path("work/KernelSU-Next/kernel/Kbuild")
           kbuild_text = kbuild.read_text()
           gate_start = kbuild_text.find("ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)")
-          gate_end_marker = "endif\\nendif"
+          gate_end_marker = "endif\nendif"
           gate_end = kbuild_text.find(gate_end_marker, gate_start)
           if gate_start < 0 or gate_end < 0:
               raise SystemExit("Pinned KernelSU Kbuild hook gate changed; refusing blind patch")
