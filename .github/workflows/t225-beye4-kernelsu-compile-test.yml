@@ -156,10 +156,15 @@ jobs:
 
           add_decl_before("fs/read_write.c", r"SYSCALL_DEFINE3\s*\(\s*read\b",
               "extern void ksu_handle_sys_read(unsigned int fd);")
-          inject_after_decl("fs/read_write.c",
-              r"SYSCALL_DEFINE3\s*\(\s*read\b[^)]*\)\s*\{",
-              "ssize_t ret = -EBADF;",
-              "ksu_handle_sys_read(fd);")
+          p = root / "fs/read_write.c"
+          text = p.read_text()
+          target = "return ksys_read(fd, buf, count);"
+          call = "ksu_handle_sys_read(fd);"
+          if call not in text:
+              if text.count(target) != 1:
+                  raise SystemExit(f"Expected one ksys_read return in fs/read_write.c, got {text.count(target)}")
+              text = text.replace(target, call + "\n\t" + target, 1)
+              p.write_text(text)
 
           add_decl_before("fs/stat.c", r"SYSCALL_DEFINE4\s*\(\s*newfstatat\b",
               "extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n"
