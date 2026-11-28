@@ -146,11 +146,11 @@ jobs:
                   text = text[:m.start(2)] + body + text[m.end(2):]
           p.write_text(text)
 
-          add_decl_before("fs/open.c", r"(?m)^static long do_faccessat\s*\(",
+          add_decl_before("fs/open.c", r"(?m)^(?:static\s+)?(?:long|int)\s+do_faccessat\s*\(",
               "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\n"
               "        int *mode, int *flags);")
           inject_after_decl("fs/open.c",
-              r"static long do_faccessat\s*\([^)]*\)\s*\{",
+              r"(?:static\s+)?(?:long|int)\s+do_faccessat\s*\([^)]*\)\s*\{",
               "unsigned int lookup_flags = LOOKUP_FOLLOW;",
               "ksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
 
