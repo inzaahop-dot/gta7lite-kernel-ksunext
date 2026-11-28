@@ -51,14 +51,20 @@ jobs:
           curl --fail --location --retry 3 --retry-all-errors \
             'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/0e9e7035bf8ad42437c6156e5950eab13655b26c/clang-r383902.tar.gz' \
             -o work/clang-r383902.tar.gz
+          echo '80feccb9f7afc451e3d7c1846f666df2d7badd47852e4a14836f15900c5682ac  work/clang-r383902.tar.gz' | sha256sum --check
           sha256sum work/clang-r383902.tar.gz > evidence/clang-archive-sha256.txt
           tar -xzf work/clang-r383902.tar.gz -C toolchain --no-same-owner --no-same-permissions
           test -x toolchain/bin/clang
+          test -x toolchain/bin/clang++
           test -x toolchain/bin/ld.lld
+          toolchain/bin/clang --version > evidence/clang-version.txt
+          toolchain/bin/ld.lld --version > evidence/lld-version.txt
+          find toolchain/bin -maxdepth 1 -type f -o -type l | sort > evidence/toolchain-bin-files.txt
+          if [ ! -x toolchain/bin/aarch64-linux-gnu-ld ]; then
+            ln -s "$(command -v aarch64-linux-gnu-ld)" toolchain/bin/aarch64-linux-gnu-ld
+          fi
           test -x toolchain/bin/aarch64-linux-gnu-ld
-          toolchain/bin/clang --version | tee evidence/clang-version.txt
-          toolchain/bin/ld.lld --version | tee evidence/lld-version.txt
-          toolchain/bin/aarch64-linux-gnu-ld --version | head -2 > evidence/cross-linker-version.txt
+          toolchain/bin/aarch64-linux-gnu-ld --version > evidence/cross-linker-version.txt
 
       - name: Pin KernelSU Next legacy source
         shell: bash
@@ -80,71 +86,73 @@ jobs:
 
           root = Path("source")
 
-          def add_declarations(path, block):
+          def add_decl_before(path, marker, declaration):
               p = root / path
               text = p.read_text()
-              if block.strip() in text:
+              block = "#ifdef CONFIG_KSU\\n" + declaration + "\\n#endif\\n\\n"
+              if declaration in text:
                   return
-              lines = text.splitlines()
-              include_positions = [i for i, line in enumerate(lines[:240]) if line.lstrip().startswith("#include")]
-              if not include_positions:
-                  raise SystemExit(f"No include block found in {path}")
-              idx = max(include_positions) + 1
-              lines[idx:idx] = ["", "#ifdef CONFIG_KSU", *block.splitlines(), "#endif", ""]
-              p.write_text("\n".join(lines) + "\n")
+              m = re.search(marker, text, re.S)
+              if not m:
+                  raise SystemExit(f"Declaration insertion point not found: {path} {marker}")
+              p.write_text(text[:m.start()] + block + text[m.start():])
 
           def inject_syscall(path, pattern, code):
               p = root / path
               text = p.read_text()
-              if code.strip() in text:
+              if code in text:
                   return
-              rx = re.compile(pattern, re.S)
+              matches = list(re.finditer(pattern, text, re.S))
+              if len(matches) != 1:
+                  raise SystemExit(f"Expected one syscall match in {path}, got {len(matches)}")
+              m = matches[0]
+              insertion = "\\n#ifdef CONFIG_KSU\\n" + code + "\\n#endif\\n"
+              p.write_text(text[:m.end()] + insertion + text[m.end():])
+
+          add_decl_before("fs/exec.c", r"(?m)^(?:static\\s+)?int\\s+do_execve\\s*\\(",
+              "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,\\n"
+              "        void *argv, void *envp, int *flags);")
+
+          p = root / "fs/exec.c"
+          text = p.read_text()
+          for fn in ("do_execve", "compat_do_execve"):
+              rx = re.compile(r"((?:static\\s+)?int\\s+" + fn + r"\\s*\\([^)]*\\)\\s*\\{)(.*?)(\\n\\})", re.S)
               m = rx.search(text)
               if not m:
-                  raise SystemExit(f"Could not uniquely locate target syscall in {path}: {pattern}")
-              # Insert immediately after the opening brace captured by the pattern.
-              text = text[:m.end()] + "\n#ifdef CONFIG_KSU\n" + code + "\n#endif\n" + text[m.end():]
-              p.write_text(text)
-
-          add_declarations("fs/exec.c", """extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr,
-                  void *argv, void *envp, int *flags);""")
-          for fn in ("do_execve", "compat_do_execve"):
-              p = root / "fs/exec.c"
-              text = p.read_text()
-              if f"ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);" not in text:
-                  rx = re.compile(r"((?:static\\s+)?int\\s+" + fn + r"\\s*\\([^)]*\\)\\s*\\{)(.*?)(\\n\\})", re.S)
-                  m = rx.search(text)
-                  if not m:
-                      raise SystemExit(f"Could not locate {fn} in fs/exec.c")
-                  body = m.group(2)
-                  target = "return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);"
+                  raise SystemExit(f"Could not locate {fn} in fs/exec.c")
+              body = m.group(2)
+              target = "return do_execveat_common(AT_FDCWD, filename, argv, envp, 0);"
+              call = "ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);"
+              if call not in body:
                   if target not in body:
                       raise SystemExit(f"Expected do_execveat_common return not found in {fn}")
-                  body = body.replace(target,
-                      "ksu_handle_execveat((int *)AT_FDCWD, &filename, &argv, &envp, 0);\\n\\t" + target, 1)
+                  body = body.replace(target, call + "\\n\\t" + target, 1)
                   text = text[:m.start(2)] + body + text[m.end(2):]
-                  p.write_text(text)
+          p.write_text(text)
 
-          add_declarations("fs/open.c", """extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,
-                  int *mode, int *flags);""")
+          add_decl_before("fs/open.c", r"SYSCALL_DEFINE3\\s*\\(\\s*faccessat\\b",
+              "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user,\\n"
+              "        int *mode, int *flags);")
           inject_syscall("fs/open.c", r"(SYSCALL_DEFINE3\\s*\\(\\s*faccessat\\b[^)]*\\)\\s*\\{)",
-              "\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
+              "\\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);")
 
-          add_declarations("fs/read_write.c", """extern void ksu_handle_sys_read(unsigned int fd);""")
+          add_decl_before("fs/read_write.c", r"SYSCALL_DEFINE3\\s*\\(\\s*read\\b",
+              "extern void ksu_handle_sys_read(unsigned int fd);")
           inject_syscall("fs/read_write.c", r"(SYSCALL_DEFINE3\\s*\\(\\s*read\\b[^)]*\\)\\s*\\{)",
-              "\tksu_handle_sys_read(fd);")
+              "\\tksu_handle_sys_read(fd);")
 
-          add_declarations("fs/stat.c", """extern int ksu_handle_stat(int *dfd, const char __user **filename_user,
-                  int *flags);""")
+          add_decl_before("fs/stat.c", r"SYSCALL_DEFINE4\\s*\\(\\s*newfstatat\\b",
+              "extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\\n"
+              "        int *flags);")
           inject_syscall("fs/stat.c", r"(SYSCALL_DEFINE4\\s*\\(\\s*newfstatat\\b[^)]*\\)\\s*\\{)",
-              "\tksu_handle_stat(&dfd, &filename, &flag);")
+              "\\tksu_handle_stat(&dfd, &filename, &flag);")
 
-          add_declarations("kernel/reboot.c", """extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,
-                  void __user **arg);""")
+          add_decl_before("kernel/reboot.c", r"SYSCALL_DEFINE4\\s*\\(\\s*reboot\\b",
+              "extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd,\\n"
+              "        void __user **arg);")
           inject_syscall("kernel/reboot.c", r"(SYSCALL_DEFINE4\\s*\\(\\s*reboot\\b[^)]*\\)\\s*\\{)",
-              "\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);")
+              "\\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);")
 
-          # Wire the in-tree driver directory exactly once.
           p = root / "drivers/Makefile"
           text = p.read_text()
           if "obj-$(CONFIG_KSU) += kernelsu/" not in text:
@@ -167,7 +175,6 @@ jobs:
           elif "CONFIG_KSU_MANUAL_HOOK=y" not in text:
               text += "\\nCONFIG_KSU_MANUAL_HOOK=y\\n"
           p.write_text(text)
-
           print("Pinned legacy KernelSU manual hooks integrated.")
           PY
 
