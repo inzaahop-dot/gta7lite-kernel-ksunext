@@ -166,11 +166,11 @@ jobs:
               text = text.replace(target, call + "\n\t" + target, 1)
               p.write_text(text)
 
-          add_decl_before("fs/stat.c", r"SYSCALL_DEFINE4\s*\(\s*newfstatat\b",
+          add_decl_before("fs/stat.c", r"(?m)^SYSCALL_DEFINE4\s*\(\s*newfstatat\b",
               "extern int ksu_handle_stat(int *dfd, const char __user **filename_user,\n"
               "        int *flags);")
           inject_after_decl("fs/stat.c",
-              r"SYSCALL_DEFINE4\s*\(\s*newfstatat\b[^)]*\)\s*\{",
+              r"(?m)^SYSCALL_DEFINE4\s*\(\s*newfstatat\b[^)]*\)\s*\{",
               "int error;",
               "ksu_handle_stat(&dfd, &filename, &flag);")
 
